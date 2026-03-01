@@ -49,7 +49,7 @@ class PPOTrainer:
         )
 
     @torch.no_grad() # Because we are generating rolluts (not training) we dont need gradient tracking
-    def generate_rollouts(self, prompts: list[str]) -> list[dict]:
+    def generate_rollouts(self, prompts: list[str]) -> dict:
         # --- Init ---
         # Set models to eval from train mode.
         self.policy_model.eval()
@@ -167,25 +167,27 @@ class PPOTrainer:
         # --- Reset padding to right ---
         self.tokenizer.padding_side = 'right'
 
+        # --- Decode Responses ---
+        response_texts = [
+            self.tokenizer.decode(
+                gen_ids[i][gen_mask[i].bool()],
+                skip_special_tokens=True
+            ) for i in range(gen_ids.shape[0])
+        ]
+
         # --- Pack rollouts ---
-        rollouts = []
-        batch_size = full_ids.shape[0]
-        for i in range(batch_size):
-            rollouts.append({
-                'full_ids': full_ids[i],                # (total_len,)
-                'full_mask': full_mask[i],               # (total_len,)
-                'gen_ids': gen_ids[i],                   # (gen_len,)
-                'gen_mask': gen_mask[i],                  # (gen_len,)
-                'old_logprobs': policy_logprobs[i],      # (gen_len,)
-                'values': gen_values[i],                  # (gen_len,)
-                'rewards': rewards[i],                    # (gen_len,)
-                'reward_score': reward_scores[i].item(),  # scalar
-                'prompt_text': prompts[i],                # string
-                'response_text': self.tokenizer.decode(
-                    gen_ids[i][gen_mask[i].bool()],
-                    skip_special_tokens=True
-                ),
-            })
+        rollouts = {
+            'full_ids': full_ids,                   # (batch_size, total_len,)
+            'full_mask': full_mask,                 # (batch_size, total_len,)
+            'gen_ids': gen_ids,                     # (batch_size, gen_len,)
+            'gen_mask': gen_mask,                   # (batch_size, gen_len,)
+            'old_logprobs': policy_logprobs,        # (batch_size, gen_len,)
+            'values': gen_values,                   # (batch_size, gen_len,)
+            'rewards': rewards,                     # (batch_size, gen_len,)
+            'reward_score': reward_scores,          # (batch_size,) 
+            'prompt_text': prompts,                 # (batch_size,) 
+            'response_text': response_texts,        # (batch_size,)
+        }
         return rollouts
     
     def compute_advantages(self, rewards, values, mask):
@@ -223,32 +225,37 @@ class PPOTrainer:
         self.value_model.train()
 
         # --- Compute advantages for each rollout ---
-        for rollout in rollouts:
+        adv_list, ret_list = [], []
+        batch_size = rollouts['rewards'].shape[0]
+        for i in range(batch_size):
             advantages, returns = self.compute_advantages(
-                rollout['rewards'],
-                rollout['values'],
-                rollout['gen_mask']
+                rollouts['rewards'][i],
+                rollouts['values'][i],
+                rollouts['gen_mask'][i]
             )
-            rollout['advantages'] = advantages
-            rollout['returns'] = returns
+            adv_list.append(advantages)
+            ret_list.append(returns)
+        rollouts['advantages'] = torch.stack(adv_list)
+        rollouts['returns'] = torch.stack(ret_list)
         
         # --- PPO epochs: re-use same rollouts multiple times ---
         total_policy_loss = 0.0
         total_value_loss = 0.0
         for epoch in range(ppo_epochs):
-            full_ids = torch.stack([r['full_ids'] for r in rollouts])            # (batch_size, total_len)
-            full_mask = torch.stack([r['full_mask'] for r in rollouts])          # (batch_size, total_len)
-            gen_ids = torch.stack([r['gen_ids'] for r in rollouts])              # (batch_size, gen_len)
-            gen_mask = torch.stack([r['gen_mask'] for r in rollouts])            # (batch_size, gen_len)
-            old_logprobs = torch.stack([r['old_logprobs'] for r in rollouts])    # (batch_size, gen_len)
-            advantages = torch.stack([r['advantages'] for r in rollouts])        # (batch_size, gen_len)
-            returns = torch.stack([r['returns'] for r in rollouts])              # (batch_size, gen_len)
+            # --- Unpack rollouts ---
+            full_ids = rollouts['full_ids']              # (batch_size, total_len)
+            full_mask = rollouts['full_mask']            # (batch_size, total_len)
+            gen_ids = rollouts['gen_ids']                # (batch_size, gen_len)
+            gen_mask = rollouts['gen_mask']              # (batch_size, gen_len)
+            old_logprobs = rollouts['old_logprobs']      # (batch_size, gen_len)
+            advantages = rollouts['advantages']          # (batch_size, gen_len)
+            returns = rollouts['returns']                # (batch_size, gen_len)
 
             total_len = full_ids.shape[1]
-            gen_len = gen_ids.shape[0]
+            gen_len = gen_ids.shape[1]
             prompt_len = total_len - gen_len
 
-            # --- recompute policy log-probs ---
+            # --- compute policy log-probs ---
             # Forward pass on current policy
             curr_logits = self.policy_model(
                 input_ids=full_ids,
@@ -261,5 +268,83 @@ class PPOTrainer:
             curr_logprobs = curr_logprobs_gen.gather(
                 dim=-1,
                 index=gen_ids.unsqueeze(-1) # (batch_size, gen_len, 1)
-            ).squeeze(-1)                                                                       # (batch_size, gen_len)
+            ).squeeze(-1)      
+            
+            # --- Compute Current value Estimates ---
+            curr_values_all = self.value_model(
+                input_ids=full_ids,
+                attention_mask=full_mask
+            )
+            curr_values = curr_values_all[:, prompt_len:]
 
+            # --- Policy Loss ---
+            mask_bool = gen_mask.bool()
+
+            # Normalize advantages
+            adv_masked = advantages[mask_bool]                                        # (num_real_tokens)
+            adv_normalized = (adv_masked - adv_masked.mean()) / (adv_masked.std() + 1e-8)   # (num_real_tokens)
+
+            # Probability ratio:
+            ratio = torch.exp(
+                curr_logprobs[mask_bool] - old_logprobs[mask_bool]
+            )   # (num_real_tokens,)
+
+            # Clipped policy-gradient surrogate
+            surr1 = ratio * adv_normalized
+            surr2 = torch.clamp(    # clipped ratio
+                ratio, 1.0-self.clip_eps, 1.0+self.clip_eps
+            ) * adv_normalized
+            policy_loss = -torch.min(surr1, surr2).mean()
+
+            # --- Value Loss ---
+            value_loss = F.mse_loss(
+                curr_values[mask_bool],
+                returns[mask_bool]
+            )
+
+            # --- Combined loss ---
+            loss = policy_loss + self.value_loss_coef * value_loss
+
+            # --- Gradient setp ---
+            self.optimizer.zero_grad()
+            loss.backward()
+            clip_grad_norm_(
+                list(self.policy_model.parameters()) + list(self.value_model.parameters()),
+                max_norm=1.0
+            )
+            self.optimizer.step()
+
+            total_policy_loss += policy_loss.item()
+            total_value_loss += value_loss.item()
+
+        # --- Return avg losses for logging ---
+        avg_policy_loss = total_policy_loss / ppo_epochs
+        avg_value_loss = total_value_loss / ppo_epochs
+        return avg_policy_loss, avg_value_loss
+    
+    def train(self, prompts: list[str], num_epochs: int = 50, batch_size: int = 4):
+        """Main PPO Training Loop"""
+        
+        with open('prompts/ppo_prompt_template.md', 'r') as f:
+            template = f.read()
+
+        formatted_prompts = [
+            template.format(prompt=p) for p in prompts
+        ]
+
+        for epoch in range(num_epochs):
+            batch_indicies = torch.randint(0, len(formatted_prompts), (batch_size,))
+            batch_prompts = [formatted_prompts[i] for i in batch_indicies]
+
+            rollouts = self.generate_rollouts(batch_prompts)
+
+            avg_policy_loss, avg_value_loss = self.ppo_step(rollouts)
+
+            avg_reward = sum(rollouts['reward_score']) / len(rollouts['reward_score'])
+            print(f"Iter {epoch+1}/{num_epochs} | "
+                  f"Policy Loss: {avg_policy_loss:.4f} | "
+                  f"Value Loss: {avg_value_loss:.4f} | "
+                  f"Avg Reward: {avg_reward:.4f}")
+
+            if (epoch + 1) %10 == 0:
+                print(f"  Sample: {rollouts['response_text'][0][:200]}")
