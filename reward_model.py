@@ -22,15 +22,15 @@ class RewardModel(nn.Module):
         outputs = self.backbone(
             input_ids=input_ids,
             attention_mask=attention_mask
-        )
-        hidden_states = outputs.last_hidden_state # hidden state of last layer
+        ) 
+        hidden_states = outputs.last_hidden_state # (batch_size, total_len, hidden_size) hidden state of last layer
 
         batch_size = input_ids.shape[0]
-        sequence_lengths = attention_mask.sum(dim=1) - 1
+        sequence_lengths = attention_mask.sum(dim=1) - 1 # (batch_Size,)
         pooled = hidden_states[
             torch.arange(batch_size, device=hidden_states.device),
             sequence_lengths
-        ] # Hidden state of last non-padding token for each sequence in the batch
+        ] # (batch_size, hidden_size) Hidden state of last non-padding token for each sequence in the batch
 
-        reward = self.reward_head(pooled)
-        return reward.squeeze(-1)
+        reward = self.reward_head(pooled) # (batch_size, 1)
+        return reward.squeeze(-1) # (batch_size.)
