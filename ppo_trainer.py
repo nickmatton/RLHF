@@ -348,3 +348,9 @@ class PPOTrainer:
 
             if (epoch + 1) %10 == 0:
                 print(f"  Sample: {rollouts['response_text'][0][:200]}")
+
+                # --- Save trained policy ---
+        self.policy_model.save_pretrained('checkpoints/ppo_policy')
+        self.tokenizer.save_pretrained('checkpoints/ppo_policy')
+        print("Saved policy model to checkpoints/ppo_policy")
+
