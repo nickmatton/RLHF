@@ -3,8 +3,6 @@
 import torch
 import torch.nn as nn
 from transformers import GPT2Model
-from tqdm import tqdm
-from utils import get_device
 
 class RewardModel(nn.Module):
     def __init__(self, model_name="gpt_2"):

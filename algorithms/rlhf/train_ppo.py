@@ -1,8 +1,11 @@
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
 from transformers import GPT2LMHeadModel, AutoTokenizer
-from value_model import ValueModel
-from reward_model import RewardModel
-from ppo_trainer import PPOTrainer
-from utils import get_device
+from models.value_model import ValueModel
+from models.reward_model import RewardModel
+from algorithms.rlhf.ppo_trainer import PPOTrainer
+from common.utils import get_device
 import torch
 import json
 import argparse

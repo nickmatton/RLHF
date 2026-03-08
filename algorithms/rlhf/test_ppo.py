@@ -1,5 +1,8 @@
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
 from transformers import GPT2LMHeadModel, AutoTokenizer
-from utils import get_device
+from common.utils import get_device
 import torch
 import json
 

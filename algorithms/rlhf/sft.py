@@ -1,13 +1,15 @@
 # sft.py
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
 from json import load
-import os
 import torch
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, get_linear_schedule_with_warmup
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
 
-from utils import get_device
-from sft_dataset import SFTDataset
+from common.utils import get_device
+from algorithms.rlhf.sft_dataset import SFTDataset
 
 def train(model_name="gpt2", data_path="data/sft_data.json", output_dir="sft_model", epochs=20, batch_size=8, learning_rate=5e-5, log_file="checkpoints/sft/training_log.csv"):
     device = get_device()

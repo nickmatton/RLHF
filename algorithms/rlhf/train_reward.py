@@ -1,19 +1,20 @@
-# train_reqard.py
+# train_reward.py
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
 import csv
-import os
 from json import load
-from sched import scheduler
 from transformers import GPT2Tokenizer, get_linear_schedule_with_warmup
 import torch
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
 
-from preference_dataset import PreferenceDataset
-from reward_model import RewardModel
-from utils import get_device
+from algorithms.rlhf.preference_dataset import PreferenceDataset
+from models.reward_model import RewardModel
+from common.utils import get_device
 
 
-def train_reward_model(num_epochs=20, batch_size=8, learning_rate=5e-5):
+def train_reward_model(num_epochs=5, batch_size=8, learning_rate=5e-5):
     model_name = "gpt2"
     device = get_device()
 

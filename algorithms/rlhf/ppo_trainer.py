@@ -1,4 +1,7 @@
 # ppo_trainer.py
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
 from transformers import get_linear_schedule_with_warmup
 from transformers import PreTrainedModel, PreTrainedTokenizer
 import torch
@@ -9,7 +12,7 @@ from tqdm import tqdm
 import json
 
 from torch.nn.utils import clip_grad_norm_
-from utils import get_device
+from common.utils import get_device
 
 class PPOTrainer:
     def __init__(
@@ -28,7 +31,7 @@ class PPOTrainer:
         max_gen_len: int = 128,
         batch_size: int = 16,
         num_iterations: int = 50,
-        ppo_epochs: int = 4
+        ppo_epochs: int = 2
     ):
         self.policy_model = policy_model
         self.ref_model = ref_model
@@ -55,7 +58,7 @@ class PPOTrainer:
         )
         self.value_optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.value_model.parameters()),
-            lr=1e-6,
+            lr=1e-4,
             weight_decay=0.01
         )
 
